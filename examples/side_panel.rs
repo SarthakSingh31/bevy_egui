@@ -1,4 +1,4 @@
-use bevy::{prelude::*, render::camera::Projection};
+use bevy::{prelude::*, render::camera::Projection, window::PrimaryWindow};
 use bevy_egui::{egui, EguiContext, EguiPlugin};
 
 #[derive(Default, Resource)]
@@ -103,7 +103,7 @@ fn setup_system(
 fn update_camera_transform_system(
     occupied_screen_space: Res<OccupiedScreenSpace>,
     original_camera_transform: Res<OriginalCameraTransform>,
-    windows: Res<Windows>,
+    primary_window: Query<&Window, With<PrimaryWindow>>,
     mut camera_query: Query<(&Projection, &mut Transform)>,
 ) {
     let (camera_projection, mut transform) = match camera_query.get_single_mut() {
@@ -115,7 +115,7 @@ fn update_camera_transform_system(
     let frustum_height = 2.0 * distance_to_target * (camera_projection.fov * 0.5).tan();
     let frustum_width = frustum_height * camera_projection.aspect_ratio;
 
-    let window = windows.get_primary().unwrap();
+    let window = primary_window.single();
 
     let left_taken = occupied_screen_space.left / window.width();
     let right_taken = occupied_screen_space.right / window.width();

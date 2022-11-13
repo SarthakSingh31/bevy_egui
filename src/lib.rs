@@ -73,13 +73,16 @@ use bevy::{
     ecs::{event::EventReader, schedule::SystemLabel, system::ResMut},
     input::InputSystem,
     log,
-    prelude::{Deref, DerefMut, IntoSystemDescriptor, Resource, Shader},
+    prelude::{
+        Deref, DerefMut, Entity, IntoSystemDescriptor, Query, QueryState, Resource, Shader, With,
+        World,
+    },
     render::{
         render_graph::RenderGraph, render_resource::SpecializedRenderPipelines, texture::Image,
         RenderApp, RenderStage,
     },
     utils::HashMap,
-    window::WindowId,
+    window::PrimaryWindow,
 };
 use egui_node::EguiNode;
 #[cfg(all(feature = "manage_clipboard", not(target_arch = "wasm32")))]
@@ -125,19 +128,19 @@ impl Default for EguiSettings {
 
 /// Stores [`EguiRenderOutput`] for each window.
 #[derive(Resource, Deref, DerefMut, Default)]
-pub struct EguiRenderOutputContainer(pub HashMap<WindowId, EguiRenderOutput>);
+pub struct EguiRenderOutputContainer(pub HashMap<Entity, EguiRenderOutput>);
 
 /// Stores [`EguiInput`] for each window.
 #[derive(Resource, Deref, DerefMut, Default)]
-pub struct EguiRenderInputContainer(pub HashMap<WindowId, EguiInput>);
+pub struct EguiRenderInputContainer(pub HashMap<Entity, EguiInput>);
 
 /// Stores [`EguiOutputContainer`] for each window.
 #[derive(Resource, Deref, DerefMut, Default)]
-pub struct EguiOutputContainer(pub HashMap<WindowId, EguiOutput>);
+pub struct EguiOutputContainer(pub HashMap<Entity, EguiOutput>);
 
 /// Stores [`WindowSize`] for each window.
 #[derive(Resource, Deref, DerefMut, Default)]
-pub struct EguiWindowSizeContainer(pub HashMap<WindowId, WindowSize>);
+pub struct EguiWindowSizeContainer(pub HashMap<Entity, WindowSize>);
 
 /// Is used for storing the input passed to Egui in the [`EguiRenderInputContainer`] resource.
 ///
@@ -239,10 +242,11 @@ pub struct EguiOutput {
 /// A resource for storing `bevy_egui` context.
 #[derive(Clone, Resource)]
 pub struct EguiContext {
-    ctx: HashMap<WindowId, egui::Context>,
+    ctx: HashMap<Entity, egui::Context>,
     user_textures: HashMap<Handle<Image>, u64>,
     last_texture_id: u64,
-    mouse_position: Option<(WindowId, egui::Vec2)>,
+    mouse_position: Option<(Entity, egui::Vec2)>,
+    primary_window: Option<Entity>,
 }
 
 impl EguiContext {
@@ -252,7 +256,15 @@ impl EguiContext {
             user_textures: Default::default(),
             last_texture_id: 0,
             mouse_position: None,
+            primary_window: None,
         }
+    }
+
+    fn update_primary_window(
+        mut ctx: ResMut<Self>,
+        primary_window: Query<Entity, With<PrimaryWindow>>,
+    ) {
+        ctx.primary_window = primary_window.get_single().ok();
     }
 
     /// Egui context of the primary window.
@@ -263,7 +275,7 @@ impl EguiContext {
     #[must_use]
     #[track_caller]
     pub fn ctx(&self) -> &egui::Context {
-        self.ctx.get(&WindowId::primary()).expect("`EguiContext::ctx` was called for an uninitialized context (primary window), consider moving your startup system to the `StartupStage::Startup` stage or run it after the `EguiStartupSystem::InitContexts` system")
+        self.ctx.get(&self.primary_window.expect("`EguiContext::ctx_mut` was called when there was no primary window set.")).expect("`EguiContext::ctx` was called for an uninitialized context (primary window), consider moving your startup system to the `StartupStage::Startup` stage or run it after the `EguiStartupSystem::InitContexts` system")
     }
 
     /// Egui context for a specific window.
@@ -276,7 +288,7 @@ impl EguiContext {
     #[cfg(feature = "immutable_ctx")]
     #[must_use]
     #[track_caller]
-    pub fn ctx_for_window(&self, window: WindowId) -> &egui::Context {
+    pub fn ctx_for_window(&self, window: Entity) -> &egui::Context {
         self.ctx
             .get(&window)
             .unwrap_or_else(|| panic!("`EguiContext::ctx_for_window` was called for an uninitialized context (window {}), consider moving your UI system to the `CoreStage::Update` stage or run it after the `EguiSystem::BeginFrame` system (`StartupStage::Startup` or `EguiStartupSystem::InitContexts` for startup systems respectively)", window))
@@ -290,7 +302,7 @@ impl EguiContext {
     /// UI systems.
     #[cfg(feature = "immutable_ctx")]
     #[must_use]
-    pub fn try_ctx_for_window(&self, window: WindowId) -> Option<&egui::Context> {
+    pub fn try_ctx_for_window(&self, window: Entity) -> Option<&egui::Context> {
         self.ctx.get(&window)
     }
 
@@ -298,7 +310,7 @@ impl EguiContext {
     #[must_use]
     #[track_caller]
     pub fn ctx_mut(&mut self) -> &egui::Context {
-        self.ctx.get(&WindowId::primary()).expect("`EguiContext::ctx_mut` was called for an uninitialized context (primary window), consider moving your startup system to the `StartupStage::Startup` stage or run it after the `EguiStartupSystem::InitContexts` system")
+        self.ctx.get(&self.primary_window.expect("`EguiContext::ctx_mut` was called when there was no primary window set.")).expect("`EguiContext::ctx_mut` was called for an uninitialized context (primary window), consider moving your startup system to the `StartupStage::Startup` stage or run it after the `EguiStartupSystem::InitContexts` system")
     }
 
     /// Egui context for a specific window.
@@ -306,16 +318,16 @@ impl EguiContext {
     /// calling [`setup_pipeline`].
     #[must_use]
     #[track_caller]
-    pub fn ctx_for_window_mut(&mut self, window: WindowId) -> &egui::Context {
+    pub fn ctx_for_window_mut(&mut self, window: Entity) -> &egui::Context {
         self.ctx
             .get(&window)
-            .unwrap_or_else(|| panic!("`EguiContext::ctx_for_window_mut` was called for an uninitialized context (window {window}), consider moving your UI system to the `CoreStage::Update` stage or run it after the `EguiSystem::BeginFrame` system (`StartupStage::Startup` or `EguiStartupSystem::InitContexts` for startup systems respectively)"))
+            .unwrap_or_else(|| panic!("`EguiContext::ctx_for_window_mut` was called for an uninitialized context (window {window:?}), consider moving your UI system to the `CoreStage::Update` stage or run it after the `EguiSystem::BeginFrame` system (`StartupStage::Startup` or `EguiStartupSystem::InitContexts` for startup systems respectively)"))
     }
 
     /// Fallible variant of [`EguiContext::ctx_for_window_mut`]. Make sure to set up the render
     /// graph by calling [`setup_pipeline`].
     #[must_use]
-    pub fn try_ctx_for_window_mut(&mut self, window: WindowId) -> Option<&egui::Context> {
+    pub fn try_ctx_for_window_mut(&mut self, window: Entity) -> Option<&egui::Context> {
         self.ctx.get(&window)
     }
 
@@ -327,16 +339,13 @@ impl EguiContext {
     /// Panics if the passed window ids aren't unique.
     #[must_use]
     #[track_caller]
-    pub fn ctx_for_windows_mut<const N: usize>(
-        &mut self,
-        ids: [WindowId; N],
-    ) -> [&egui::Context; N] {
+    pub fn ctx_for_windows_mut<const N: usize>(&mut self, ids: [Entity; N]) -> [&egui::Context; N] {
         let mut unique_ids = bevy::utils::HashSet::default();
         assert!(
             ids.iter().all(move |id| unique_ids.insert(id)),
             "Window ids passed to `EguiContext::ctx_for_windows_mut` must be unique: {ids:?}",
         );
-        ids.map(|id| self.ctx.get(&id).unwrap_or_else(|| panic!("`EguiContext::ctx_for_windows_mut` was called for an uninitialized context (window {id}), consider moving your UI system to the `CoreStage::Update` stage or run it after the `EguiSystem::BeginFrame` system (`StartupStage::Startup` or `EguiStartupSystem::InitContexts` for startup systems respectively)")))
+        ids.map(|id| self.ctx.get(&id).unwrap_or_else(|| panic!("`EguiContext::ctx_for_windows_mut` was called for an uninitialized context (window {id:?}), consider moving your UI system to the `CoreStage::Update` stage or run it after the `EguiSystem::BeginFrame` system (`StartupStage::Startup` or `EguiStartupSystem::InitContexts` for startup systems respectively)")))
     }
 
     /// Fallible variant of [`EguiContext::ctx_for_windows_mut`]. Make sure to set up the render
@@ -348,7 +357,7 @@ impl EguiContext {
     #[must_use]
     pub fn try_ctx_for_windows_mut<const N: usize>(
         &mut self,
-        ids: [WindowId; N],
+        ids: [Entity; N],
     ) -> [Option<&egui::Context>; N] {
         let mut unique_ids = bevy::utils::HashSet::default();
         assert!(
@@ -452,18 +461,15 @@ impl Plugin for EguiPlugin {
         let world = &mut app.world;
         world.insert_resource(EguiSettings::default());
         world.insert_resource(EguiRenderInputContainer(
-            HashMap::<WindowId, EguiInput>::default(),
+            HashMap::<Entity, EguiInput>::default(),
         ));
-        world.insert_resource(EguiOutputContainer(
-            HashMap::<WindowId, EguiOutput>::default(),
-        ));
+        world.insert_resource(EguiOutputContainer(HashMap::<Entity, EguiOutput>::default()));
         world.insert_resource(EguiWindowSizeContainer(
-            HashMap::<WindowId, WindowSize>::default(),
+            HashMap::<Entity, WindowSize>::default(),
         ));
-        world.insert_resource(EguiRenderOutputContainer(HashMap::<
-            WindowId,
-            EguiRenderOutput,
-        >::default()));
+        world.insert_resource(EguiRenderOutputContainer(
+            HashMap::<Entity, EguiRenderOutput>::default(),
+        ));
         world.insert_resource(EguiManagedTextures::default());
         #[cfg(feature = "manage_clipboard")]
         world.insert_resource(EguiClipboard::default());
@@ -472,6 +478,10 @@ impl Plugin for EguiPlugin {
         app.add_startup_system_to_stage(
             StartupStage::PreStartup,
             init_contexts_startup_system.label(EguiStartupSystem::InitContexts),
+        );
+        app.add_startup_system_to_stage(
+            StartupStage::PreStartup,
+            EguiContext::update_primary_window.label(EguiStartupSystem::InitContexts),
         );
 
         app.add_system_to_stage(
@@ -502,6 +512,8 @@ impl Plugin for EguiPlugin {
             Shader::from_wgsl(include_str!("egui.wgsl")),
         );
 
+        let primary_config = RenderGraphConfig::primary(&mut app.world);
+
         if let Ok(render_app) = app.get_sub_app_mut(RenderApp) {
             render_app
                 .init_resource::<egui_node::EguiPipeline>()
@@ -523,14 +535,17 @@ impl Plugin for EguiPlugin {
                 .add_system_to_stage(RenderStage::Queue, render_systems::queue_pipelines_system);
 
             let mut render_graph = render_app.world.get_resource_mut::<RenderGraph>().unwrap();
-            setup_pipeline(&mut render_graph, RenderGraphConfig::default());
+
+            if let Some(config) = primary_config {
+                setup_pipeline(&mut render_graph, config);
+            }
         }
     }
 }
 
 /// Contains textures allocated and painted by Egui.
 #[derive(Resource, Deref, DerefMut, Default)]
-pub struct EguiManagedTextures(pub HashMap<(WindowId, u64), EguiManagedTexture>);
+pub struct EguiManagedTextures(pub HashMap<(Entity, u64), EguiManagedTexture>);
 
 /// Represents a texture allocated and painted by Egui.
 pub struct EguiManagedTexture {
@@ -622,17 +637,20 @@ fn free_egui_textures_system(
 /// Egui's render graph config.
 pub struct RenderGraphConfig {
     /// Target window.
-    pub window_id: WindowId,
+    pub window_entity: Entity,
     /// Render pass name.
     pub egui_pass: &'static str,
 }
 
-impl Default for RenderGraphConfig {
-    fn default() -> Self {
-        RenderGraphConfig {
-            window_id: WindowId::primary(),
+impl RenderGraphConfig {
+    /// Creates the config with the primary window as the window entity
+    pub fn primary(world: &mut World) -> Option<Self> {
+        let mut primary_window = QueryState::<(Entity, With<PrimaryWindow>)>::new(world);
+
+        Some(RenderGraphConfig {
+            window_entity: primary_window.get_single(world).ok()?.0,
             egui_pass: node::EGUI_PASS,
-        }
+        })
     }
 }
 
@@ -641,23 +659,22 @@ impl Default for RenderGraphConfig {
 /// The pipeline for the primary window will already be set up by the [`EguiPlugin`],
 /// so you'll only need to manually call this if you want to use multiple windows.
 pub fn setup_pipeline(render_graph: &mut RenderGraph, config: RenderGraphConfig) {
-    render_graph.add_node(config.egui_pass, EguiNode::new(config.window_id));
+    render_graph.add_node(config.egui_pass, EguiNode::new(config.window_entity));
 
-    render_graph
-        .add_node_edge(
-            bevy::render::main_graph::node::CAMERA_DRIVER,
-            config.egui_pass,
-        )
-        .unwrap();
-
-    let _ = render_graph.add_node_edge("ui_pass_driver", config.egui_pass);
+    render_graph.add_node_edge(
+        bevy::render::main_graph::node::CAMERA_DRIVER,
+        config.egui_pass,
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use bevy::{
-        app::PluginGroup, render::settings::WgpuSettings, winit::WinitPlugin, DefaultPlugins,
+        app::PluginGroup,
+        render::{settings::WgpuSettings, RenderPlugin},
+        winit::WinitPlugin,
+        DefaultPlugins,
     };
 
     #[test]
@@ -668,11 +685,17 @@ mod tests {
     #[test]
     fn test_headless_mode() {
         App::new()
-            .insert_resource(WgpuSettings {
-                backends: None,
-                ..Default::default()
-            })
-            .add_plugins(DefaultPlugins.build().disable::<WinitPlugin>())
+            .add_plugins(
+                DefaultPlugins
+                    .set(RenderPlugin {
+                        wgpu_settings: WgpuSettings {
+                            backends: None,
+                            ..Default::default()
+                        },
+                    })
+                    .build()
+                    .disable::<WinitPlugin>(),
+            )
             .add_plugin(EguiPlugin)
             .update();
     }
@@ -680,8 +703,8 @@ mod tests {
     #[test]
     fn test_ctx_for_windows_mut_unique_check_passes() {
         let mut egui_context = EguiContext::new();
-        let primary_window = WindowId::primary();
-        let second_window = WindowId::new();
+        let primary_window = Entity::from_bits(0);
+        let second_window = Entity::from_bits(1);
         egui_context.ctx.insert(primary_window, Default::default());
         egui_context.ctx.insert(second_window, Default::default());
         let [primary_ctx, second_ctx] =
@@ -695,7 +718,7 @@ mod tests {
     )]
     fn test_ctx_for_windows_mut_unique_check_panics() {
         let mut egui_context = EguiContext::new();
-        let primary_window = WindowId::primary();
+        let primary_window = Entity::from_bits(0);
         egui_context.ctx.insert(primary_window, Default::default());
         let _ = egui_context.ctx_for_windows_mut([primary_window, primary_window]);
     }
@@ -703,8 +726,8 @@ mod tests {
     #[test]
     fn test_try_ctx_for_windows_mut_unique_check_passes() {
         let mut egui_context = EguiContext::new();
-        let primary_window = WindowId::primary();
-        let second_window = WindowId::new();
+        let primary_window = Entity::from_bits(0);
+        let second_window = Entity::from_bits(1);
         egui_context.ctx.insert(primary_window, Default::default());
         egui_context.ctx.insert(second_window, Default::default());
         let [primary_ctx, second_ctx] =
@@ -720,7 +743,7 @@ mod tests {
     )]
     fn test_try_ctx_for_windows_mut_unique_check_panics() {
         let mut egui_context = EguiContext::new();
-        let primary_window = WindowId::primary();
+        let primary_window = Entity::from_bits(0);
         egui_context.ctx.insert(primary_window, Default::default());
         let _ = egui_context.try_ctx_for_windows_mut([primary_window, primary_window]);
     }
